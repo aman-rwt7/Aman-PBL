@@ -3,7 +3,7 @@
 
 import * as React from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { Map, Hospital as HospitalIcon, Phone, Clock, TrafficCone, Loader2, AlertTriangle, ArrowRight } from "lucide-react";
+import { Map, Hospital as HospitalIcon, Phone, Clock, TrafficCone, Loader2, AlertTriangle, ArrowRight, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import type { RouteInfo, Hospital, UserLocation, EmergencyCategory } from "@/lib/types";
@@ -42,7 +42,7 @@ const simulateRouteCalculation = async (location: UserLocation, emergencyType: E
 
 // Placeholder for Map Component
 const RouteMapPlaceholder = ({ routes, userLocation }: { routes: RouteInfo[], userLocation: UserLocation | null }) => (
-  <div className="aspect-video w-full bg-muted rounded-lg flex flex-col items-center justify-center text-muted-foreground shadow-inner mb-6">
+  <div className="aspect-video w-full bg-muted rounded-lg flex flex-col items-center justify-center text-muted-foreground shadow-inner mb-6" data-ai-hint="map placeholder">
     <Map className="w-16 h-16 mb-2" />
     <span>(Route Map Placeholder)</span>
     {userLocation?.latitude && userLocation.longitude && (
@@ -57,6 +57,60 @@ const RouteMapPlaceholder = ({ routes, userLocation }: { routes: RouteInfo[], us
   </div>
 );
 // --- End Simulation ---
+
+const generateRouteSummaryText = (routesData: RouteInfo[], emergencyTypeData: EmergencyCategory | null, userLocationData: UserLocation | null): string => {
+  let summary = `MediRoute - Emergency Route Summary\n`;
+  summary += `Generated: ${new Date().toLocaleString()}\n`;
+  summary += `Emergency Type: ${emergencyTypeData || 'Not specified'}\n`;
+
+  if (userLocationData) {
+    const locationString = userLocationData.address
+      ? userLocationData.address
+      : userLocationData.latitude && userLocationData.longitude
+      ? `Coordinates: ${userLocationData.latitude.toFixed(4)}, ${userLocationData.longitude.toFixed(4)}`
+      : 'Unavailable';
+    summary += `Your Location: ${locationString}\n`;
+  } else {
+    summary += `Your Location: Unavailable\n`;
+  }
+  summary += `========================================\n\n`;
+
+  const primary = routesData.find(r => r.isPrimary);
+  const alternatives = routesData.filter(r => !r.isPrimary);
+
+  if (primary) {
+    summary += `PRIMARY ROUTE:\n`;
+    summary += `  Hospital: ${primary.hospital.name}\n`;
+    summary += `  Address: ${primary.hospital.address}\n`;
+    summary += `  Phone: ${primary.hospital.phone || 'N/A'}\n`;
+    summary += `  Distance: ${primary.distance}\n`;
+    summary += `  Est. Time: ${primary.time}\n`;
+    summary += `  Traffic: ${primary.trafficStatus || 'N/A'}\n\n`;
+  }
+
+  if (alternatives.length > 0) {
+    summary += `ALTERNATIVE ROUTES:\n`;
+    alternatives.forEach((route, index) => {
+      summary += `\nAlternative ${index + 1}:\n`;
+      summary += `  Hospital: ${route.hospital.name}\n`;
+      summary += `  Address: ${route.hospital.address}\n`;
+      summary += `  Phone: ${route.hospital.phone || 'N/A'}\n`;
+      summary += `  Distance: ${route.distance}\n`;
+      summary += `  Est. Time: ${route.time}\n`;
+      summary += `  Traffic: ${route.trafficStatus || 'N/A'}\n`;
+    });
+    summary += `\n`;
+  }
+
+  if (!primary && alternatives.length === 0) {
+    summary += "No routes were found for the specified location and emergency type.\n\n";
+  }
+
+  summary += `========================================\n`;
+  summary += `Disclaimer: This information is for guidance and planning purposes only. In a real emergency, always call emergency services. Verify details and prioritize safety.\n`;
+  return summary;
+};
+
 
 export default function RoutePage() {
   const router = useRouter();
@@ -143,6 +197,36 @@ export default function RoutePage() {
        toast({ title: "Opening Navigation", description: `Starting route to ${hospital.name}`});
    }
 
+  const handleDownloadSummary = () => {
+    if (isLoading) {
+        toast({ title: "Please wait", description: "Routes are still loading.", variant: "default" });
+        return;
+    }
+    if (error && routes.length === 0) { // If there's a general error and no routes displayed
+       toast({ title: "Error Present", description: "Cannot download summary due to an existing error and no routes available.", variant: "destructive" });
+      return;
+    }
+    if (routes.length === 0) { // If no routes were found (but no general error)
+      toast({ title: "No Data", description: "No route data to download.", variant: "default" });
+      return;
+    }
+
+    const summaryText = generateRouteSummaryText(routes, emergencyType, userLocation);
+    const filename = `MediRoute_Summary_${emergencyType || 'Emergency'}_${new Date().toISOString().split('T')[0]}.txt`;
+
+    const blob = new Blob([summaryText], { type: 'text/plain;charset=utf-8' });
+    const fileUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = fileUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(fileUrl);
+
+    toast({ title: "Download Started", description: `${filename} is downloading.` });
+  };
+
 
   if (isLoading) {
     return (
@@ -154,7 +238,7 @@ export default function RoutePage() {
     );
   }
 
-  if (error) {
+  if (error && routes.length === 0) { // Show main error only if no routes are displayed
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
         <AlertTriangle className="w-12 h-12 text-destructive mb-4" />
@@ -171,6 +255,11 @@ export default function RoutePage() {
        <header className="mb-6 text-center">
          <h1 className="text-3xl md:text-4xl font-bold text-primary mb-1">Fastest Route to Help</h1>
          <p className="text-lg text-muted-foreground">For '{emergencyType}' Emergency</p>
+         {error && routes.length > 0 && ( // Display non-critical error if routes are still shown
+            <div className="mt-2 text-sm text-destructive/80 bg-destructive/10 p-2 rounded-md">
+                Note: {error}
+            </div>
+         )}
       </header>
 
       {/* Map Placeholder */}
@@ -260,16 +349,23 @@ export default function RoutePage() {
         </div>
       )}
 
-       {/* Chatbot Trigger */}
-       {emergencyType && (
-         <div className="mt-8 flex justify-center">
-            <Chatbot emergencyType={emergencyType} />
-          </div>
-       )}
+      {/* Action Buttons: Chatbot and Download */}
+      <div className="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
+        {emergencyType && (
+          <Chatbot emergencyType={emergencyType} />
+        )}
+        {!isLoading && routes.length > 0 && (
+          <Button onClick={handleDownloadSummary} variant="outline">
+            <Download className="mr-2 h-4 w-4" />
+            Download Route Summary
+          </Button>
+        )}
+      </div>
 
 
-       {/* SOS Button */}
+       {/* SOS Button (Fixed Position) */}
        {userLocation && <SosButton userLocation={userLocation} />}
     </div>
   );
 }
+
