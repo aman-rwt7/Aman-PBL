@@ -1,7 +1,7 @@
 "use client";
 
 import { useSearchParams, useRouter } from "next/navigation";
-import { Map, Hospital as HospitalIcon, Phone, Clock, TrafficCone, Loader2, AlertTriangle, ArrowRight, Download } from "lucide-react";
+import { Map as MapIcon, Hospital as HospitalIcon, Phone, Clock, TrafficCone, Loader2, AlertTriangle, ArrowRight, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import type { RouteInfo, Hospital, UserLocation, EmergencyCategory } from "@/lib/types";
@@ -13,34 +13,68 @@ import React, { Suspense } from "react";
 // Component implementation moved to bottom of file
 
 const fetchNearbyHospitals = async (latitude: number, longitude: number): Promise<Hospital[]> => {
-  const url = `https://nominatim.openstreetmap.org/search?format=json&q=hospital&limit=10&bounded=1&viewbox=${longitude - 0.1},${latitude + 0.1},${longitude + 0.1},${latitude - 0.1}`;
+  const delta = 0.05; // ~5km 
+  const minLat = latitude - delta;
+  const maxLat = latitude + delta;
+  const minLon = longitude - delta;
+  const maxLon = longitude + delta;
 
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "MediRoute/1.0 (mediroute@gmail.com)",
-      "Accept-Language": "en-US,en;q=0.9"
-    },
-  });
+  // Helper to fetch by amenity type
+  const fetchByAmenity = async (amenity: string) => {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&bounded=1&limit=30&viewbox=${minLon},${minLat},${maxLon},${maxLat}&amenity=${amenity}`;
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "MediRoute/1.0 (mediroute@gmail.com)",
+        "Accept-Language": "en-US,en;q=0.9"
+      },
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    if (!Array.isArray(data) || data.length === 0) return [];
+    return data.map((place: any) => ({
+      id: place.place_id?.toString() || `hospital-${Math.random().toString(36).slice(2)}`,
+      name: place.display_name.split(",")[0].trim(),
+      address: place.display_name,
+      phone: undefined,
+      latitude: parseFloat(place.lat),
+      longitude: parseFloat(place.lon),
+    }));
+  };
 
-  if (!response.ok) {
-    throw new Error("Failed to fetch nearby hospitals");
-  }
+  // Fetch hospitals and clinics separately, then merge and deduplicate
+  const [hospitals, clinics] = await Promise.all([
+    fetchByAmenity("hospital"),
+    fetchByAmenity("clinic"),
+  ]);
+  const all = [...hospitals, ...clinics];
 
-  const data = await response.json();
+  // Remove duplicates by id
+  const unique = Array.from(
+    new Map<string, Hospital>(all.map((item: Hospital) => [item.id, item])).values()
+  );
 
-  if (!Array.isArray(data) || data.length === 0) {
+  if (unique.length === 0) {
     throw new Error("No nearby hospitals found.");
   }
 
-  return data.map((place: any) => ({
-    id: place.place_id?.toString() || `hospital-${Math.random().toString(36).slice(2)}`,
-    name: place.display_name.split(",")[0].trim(),
-    address: place.display_name,
-    phone: undefined,
-    latitude: parseFloat(place.lat),
-    longitude: parseFloat(place.lon),
-  }));
+  return unique as Hospital[];
 };
+
+// ...existing code...
+
+// Haversine formula to calculate distance between two lat/lng points in km
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (x: number) => x * Math.PI / 180;
+  const R = 6371; // Earth radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
 const simulateRouteCalculation = async (location: UserLocation, emergencyType: EmergencyCategory): Promise<RouteInfo[]> => {
   if (!location.latitude || !location.longitude) {
@@ -50,21 +84,38 @@ const simulateRouteCalculation = async (location: UserLocation, emergencyType: E
   // Fetch nearby hospitals using the Nominatim API
   const hospitals = await fetchNearbyHospitals(location.latitude, location.longitude);
 
+  // Calculate distance for each hospital
+  const hospitalsWithDistance = hospitals.map(hospital => ({
+    ...hospital,
+    _distance: haversineDistance(location.latitude!, location.longitude!, hospital.latitude, hospital.longitude)
+  }));
+
+  // Sort hospitals by distance (nearest first)
+  hospitalsWithDistance.sort((a, b) => a._distance - b._distance);
+
   // Simulate route calculation (replace with real routing logic if needed)
-  return hospitals.map((hospital, index) => ({
+  return hospitalsWithDistance.map((hospital, index) => ({
     id: `route${index + 1}`,
-    hospital,
-    distance: `${(Math.random() * 5 + 1).toFixed(1)} km`, // Simulated distance
-    time: `${(Math.random() * 10 + 5).toFixed(0)} mins`, // Simulated time
-    trafficStatus: "Moderate traffic", // Simulated traffic
-    isPrimary: index === 0, // Mark the first hospital as the primary route
+    hospital: {
+      id: hospital.id,
+      name: hospital.name,
+      address: hospital.address,
+      phone: hospital.phone,
+      latitude: hospital.latitude,
+      longitude: hospital.longitude,
+    },
+    distance: `${hospital._distance.toFixed(2)} km`,
+    time: `${Math.max(3, Math.round(hospital._distance / 0.5 + 5))} mins`, // crude estimate: 30km/h + 5min buffer
+    trafficStatus: "Moderate traffic",
+    isPrimary: index === 0,
   }));
 };
+// ...existing code...
 
 // Placeholder for Map Component
 const RouteMapPlaceholder = ({ routes, userLocation }: { routes: RouteInfo[], userLocation: UserLocation | null }) => (
   <div className="aspect-video w-full bg-muted rounded-lg flex flex-col items-center justify-center text-muted-foreground shadow-inner mb-6" data-ai-hint="map placeholder">
-    <Map className="w-16 h-16 mb-2" />
+    <MapIcon className="w-16 h-16 mb-2" />
     <span>(Route Map Placeholder)</span>
     {userLocation?.latitude && userLocation.longitude && (
          <span className="text-xs mt-1">User: {userLocation.latitude.toFixed(3)}, {userLocation.longitude.toFixed(3)}</span>
@@ -325,7 +376,7 @@ function RoutePageContent() {
 
             <div className="flex flex-col sm:flex-row gap-3 pt-3">
               <Button onClick={() => handleNavigate(primaryRoute.hospital)} className="flex-1 bg-accent text-accent-foreground hover:bg-accent/90">
-                <Map className="w-4 h-4 mr-2" /> Start Navigation
+                <MapIcon className="w-4 h-4 mr-2" /> Start Navigation
               </Button>
               <Button onClick={() => handleCall(primaryRoute.hospital.phone)} variant="outline" className="flex-1">
                 <Phone className="w-4 h-4 mr-2" /> Call Facility
@@ -363,7 +414,7 @@ function RoutePageContent() {
                   </div>
                   <div className="flex gap-2 pt-2">
                     <Button onClick={() => handleNavigate(route.hospital)} size="sm" variant="secondary" className="flex-1 text-xs">
-                      <Map className="w-3 h-3 mr-1" /> Navigate
+                      <MapIcon className="w-3 h-3 mr-1" /> Navigate
                     </Button>
                     <Button onClick={() => handleCall(route.hospital.phone)} size="sm" variant="ghost" className="flex-1 text-xs">
                       <Phone className="w-3 h-3 mr-1" /> Call
